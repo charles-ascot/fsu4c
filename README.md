@@ -1,6 +1,6 @@
 # FSU4C — Google Chat Intelligence Ingestor
 
-**Chimera Platform | Fractional Services Unit 4C**
+**Chimera Platform | Fractional Services Unit 4C.**
 
 FSU4C is the Google Chat data collection FSU for the Chimera platform. It polls registered Google Chat spaces for new messages, stores raw and processed records in its own isolated GCS and Firestore collections, and exposes a queryable registry API for downstream consumers (primarily FSU4, the intelligence processor).
 
@@ -19,7 +19,7 @@ Cloud Scheduler (every 5 min)
         → Firestore: fsu4c-intelligence
 ```
 
-FSU4 (the processor) queries FSU4C's `/v1/registry` endpoint using a registered API key to pick up new records for AI tagging and action processing.
+FSU4 (the processor) queries FSU4C's `/v1/registry` endpoint using a registered API key to pick up new records for AI tagging and action processing..
 
 ---
 
