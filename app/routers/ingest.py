@@ -1,0 +1,288 @@
+from __future__ import annotations
+
+import logging
+import time
+from datetime import datetime, timedelta
+
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+
+from app.core.config import ProcessingConfig
+from app.models.chat_record import (
+    ChatAttachmentRecord,
+    ChatRecord,
+    ChimeraMeta,
+    ChimeraResponse,
+    RecordStatus,
+)
+from app.routers.auth import require_api_key
+from app.routers.config import get_current_config
+from app.services import chat_service, firestore_service, storage_service
+
+logger = logging.getLogger(__name__)
+router = APIRouter()
+
+
+# ── Pub/Sub push receiver ──────────────────────────────────────────────────────
+
+@router.post("/pubsub-push", status_code=status.HTTP_204_NO_CONTENT)
+async def pubsub_push(request: Request):
+    """
+    Cloud Pub/Sub push endpoint — triggered by Cloud Scheduler on a regular
+    interval (default: every 5 minutes).  The message payload is not used;
+    the trigger alone causes FSU4C to poll all registered Chat spaces for
+    new messages since the last poll cursor.
+    """
+    try:
+        await request.json()
+    except Exception:
+        pass  # Accept any payload — we only need the trigger
+
+    config = get_current_config()
+    try:
+        _poll_all_spaces(config)
+    except Exception as exc:
+        logger.error("Poll cycle failed: %s", exc, exc_info=True)
+
+
+# ── Manual triggers ────────────────────────────────────────────────────────────
+
+@router.post("/manual")
+async def manual_poll(
+    payload: dict,
+    _: str = Depends(require_api_key),
+):
+    """
+    Manually trigger a poll for a specific space, or all spaces if no
+    space_resource_name is provided.  Optionally pass since_iso to override
+    the poll cursor (e.g. "2026-03-01T00:00:00").
+    """
+    start = time.monotonic()
+    config = get_current_config()
+
+    space_resource_name = payload.get("space_resource_name")
+    since_iso = payload.get("since_iso")
+
+    since: datetime | None = None
+    if since_iso:
+        try:
+            since = datetime.fromisoformat(since_iso)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid since_iso format — use ISO 8601")
+
+    if space_resource_name:
+        space = firestore_service.get_space_by_resource_name(space_resource_name)
+        if not space:
+            raise HTTPException(status_code=404, detail="Space not registered")
+        if since is None:
+            since = firestore_service.get_last_poll_time() or (
+                datetime.utcnow() - timedelta(hours=1)
+            )
+        count = _poll_space(space, since, config)
+        processed = count
+    else:
+        processed = _poll_all_spaces(config, override_since=since)
+
+    elapsed = int((time.monotonic() - start) * 1000)
+    return ChimeraResponse(
+        request_id="manual-poll",
+        status="success",
+        data={"messages_processed": processed},
+        meta=ChimeraMeta(processing_time_ms=elapsed),
+    )
+
+
+@router.get("/queue")
+async def get_queue(_: str = Depends(require_api_key)):
+    """View records currently in pending/processing status."""
+    pending = firestore_service.get_pending_records()
+    return ChimeraResponse(
+        request_id="queue-query",
+        status="success",
+        data={
+            "pending_count": len(pending),
+            "records": [
+                {
+                    "record_id": r.record_id,
+                    "message_id": r.message_id,
+                    "space_display_name": r.space_display_name,
+                    "sender_name": r.sender_name,
+                    "received_at": r.received_at.isoformat(),
+                    "status": r.status.value,
+                }
+                for r in pending
+            ],
+        },
+        meta=ChimeraMeta(),
+    )
+
+
+# ── Core poll pipeline ─────────────────────────────────────────────────────────
+
+def _poll_all_spaces(
+    config: ProcessingConfig,
+    override_since: datetime | None = None,
+) -> int:
+    """
+    Poll all active registered spaces for new messages.
+    Returns the total number of messages processed.
+    """
+    spaces = firestore_service.list_active_spaces()
+    if not spaces:
+        logger.info("No active spaces registered — nothing to poll")
+        return 0
+
+    last_poll = override_since or firestore_service.get_last_poll_time()
+    now = datetime.utcnow()
+
+    if not last_poll:
+        # First run — look back slightly further than the poll interval
+        last_poll = now - timedelta(minutes=config.poll_interval_minutes + 5)
+
+    logger.info("Polling %d spaces since %s", len(spaces), last_poll.isoformat())
+
+    total = 0
+    for space in spaces:
+        if space.space_resource_name in config.ignore_spaces:
+            logger.info("Skipping space %s — in ignore list", space.space_resource_name)
+            continue
+        try:
+            total += _poll_space(space, last_poll, config)
+        except Exception as exc:
+            logger.error(
+                "Failed to poll space %s: %s",
+                space.space_resource_name, exc, exc_info=True,
+            )
+
+    # Advance the poll cursor AFTER all spaces complete
+    if override_since is None:
+        firestore_service.set_last_poll_time(now)
+
+    logger.info("Poll cycle complete — %d messages processed", total)
+    return total
+
+
+def _poll_space(space, since: datetime, config: ProcessingConfig) -> int:
+    """Poll a single space and process all new messages. Returns count processed."""
+    from app.models.chat_record import ChatSpace
+    messages = chat_service.list_messages_since(space.space_resource_name, since=since)
+    count = 0
+    for msg in messages:
+        parsed = chat_service.parse_chat_message(msg)
+        try:
+            processed = _process_message(parsed, space, config)
+            if processed:
+                count += 1
+        except Exception as exc:
+            logger.error(
+                "Failed to process message %s: %s",
+                parsed.get("message_id"), exc, exc_info=True,
+            )
+    return count
+
+
+def _process_message(
+    parsed: dict,
+    space,
+    config: ProcessingConfig,
+) -> bool:
+    """
+    Process a single parsed Chat message.
+    Returns True if a new record was created, False if skipped/duplicate.
+
+    Pipeline:
+    1. Idempotency check
+    2. Skip check (sender filters)
+    3. Create skeleton ChatRecord → write to Firestore (status=processing)
+    4. Store raw message JSON to GCS
+    5. Store attachment metadata
+    6. Store processed record to GCS
+    7. Update Firestore record (status=complete)
+    8. Update space stats + daily manifest
+    """
+    message_id = parsed["message_id"]
+
+    # 1. Idempotency
+    if firestore_service.message_already_processed(message_id):
+        logger.debug("Message %s already processed — skipping", message_id)
+        return False
+
+    # 2. Skip checks
+    sender_id = parsed.get("sender_id", "")
+    sender_email = parsed.get("sender_email", "")
+    if sender_id in config.ignore_senders or (
+        sender_email and sender_email in config.ignore_senders
+    ):
+        logger.info("Skipping message %s — sender in ignore list", message_id)
+        return False
+
+    start = time.monotonic()
+
+    # 3. Create skeleton record
+    record = ChatRecord(
+        message_id=message_id,
+        space_id=space.space_id,
+        space_resource_name=space.space_resource_name,
+        space_display_name=space.display_name,
+        space_type=space.space_type,
+        thread_id=parsed.get("thread_id"),
+        sender_id=sender_id,
+        sender_name=parsed.get("sender_name", ""),
+        sender_email=sender_email or None,
+        message_text=parsed.get("message_text", ""),
+        received_at=parsed["received_at"],
+        status=RecordStatus.processing,
+    )
+    firestore_service.create_record(record)
+
+    # 4. Store raw message to GCS
+    gcs_raw_prefix = storage_service.store_raw_message(
+        message_id=message_id,
+        space_resource_name=space.space_resource_name,
+        received_at=parsed["received_at"],
+        raw_message=parsed["raw"],
+    )
+    record.gcs_raw_prefix = gcs_raw_prefix
+
+    # 5. Store attachment metadata (no download in v1 — metadata only)
+    for att_data in parsed.get("attachments", []):
+        record.attachments.append(
+            ChatAttachmentRecord(
+                attachment_id=att_data.get("attachment_id", ""),
+                filename=att_data.get("filename"),
+                content_type=att_data.get("content_type"),
+                download_uri=att_data.get("download_uri"),
+                source=att_data.get("source"),
+                processing_status="metadata_only",
+            )
+        )
+
+    # 6. Store processed record to GCS
+    gcs_processed_prefix = storage_service.store_processed_record(
+        record.record_id, record.model_dump(mode="json")
+    )
+    record.gcs_processed_prefix = gcs_processed_prefix
+
+    # 7. Finalise
+    record.status = RecordStatus.complete
+    record.processing_time_ms = int((time.monotonic() - start) * 1000)
+    firestore_service.update_record(record)
+
+    # 8. Stats + manifest
+    firestore_service.increment_space_message_count(space.space_resource_name)
+    storage_service.update_daily_manifest(
+        parsed["received_at"],
+        {
+            "record_id": record.record_id,
+            "message_id": message_id,
+            "space_display_name": space.display_name,
+            "sender_name": parsed.get("sender_name", ""),
+            "status": record.status.value,
+            "attachment_count": len(record.attachments),
+        },
+    )
+
+    logger.info(
+        "Processed Chat message %s → record %s (%dms)",
+        message_id, record.record_id, record.processing_time_ms,
+    )
+    return True
