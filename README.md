@@ -319,3 +319,13 @@ When adding any new FSU to the Chimera platform, follow this checklist:
 - [ ] Add FSU entry to the Chimera platform registry (managed by AI conductor)
 - [ ] Deploy Cloudflare Pages frontend at `fsuXY.thync.online`
 - [ ] Document source integration in this FSU's README Annex A
+
+
+## Changelog
+
+### 2026-03-30 — Domain migration prep
+- Replaced hardcoded `thync.online` domain references with environment variables
+- `ALLOWED_ORIGINS` env var (Cloud Run) now controls CORS allowed origins — set as comma-separated list, e.g. `https://service.newdomain.com,https://service.newdomain.com`
+- Default falls back to `http://localhost:5173` for local development
+- `CHAT_INGEST_ACCOUNT` env var added — set to `cloud@ascotwm.com` for testing (defaults to `chimera.data.in@gmail.com`)
+- See `domain-migration-register.md` at the root of /Users/charles/Projects for the complete list of Cloud Run env vars to set per service

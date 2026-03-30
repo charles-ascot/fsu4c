@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pydantic import BaseModel, Field
 
 GCP_PROJECT = "chimera-v4"
@@ -9,7 +10,7 @@ FSU_NAME = "fsu4c"
 FSU_VERSION = "1.0.0"
 API_VERSION = "1.0"
 
-CHAT_ACCOUNT = "chimera.data.in@gmail.com"
+CHAT_ACCOUNT = os.environ.get("CHAT_INGEST_ACCOUNT", "cloud@ascotwm.com")
 PUBSUB_TOPIC = "fsu4c-trigger"
 PUBSUB_SUBSCRIPTION = "fsu4c-sub"
 
