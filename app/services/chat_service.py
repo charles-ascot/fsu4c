@@ -24,11 +24,11 @@ def _build_chat_service():
     raw_token = get_chat_token()
 
     creds = Credentials(
-        token=raw_token.get("token"),
+        token=raw_token.get("access_token"),
         refresh_token=raw_token.get("refresh_token"),
-        token_uri=raw_creds.get("token_uri", "https://oauth2.googleapis.com/token"),
-        client_id=raw_creds.get("client_id"),
-        client_secret=raw_creds.get("client_secret"),
+        token_uri=raw_token.get("token_uri", "https://oauth2.googleapis.com/token"),
+        client_id=raw_token.get("client_id"),
+        client_secret=raw_token.get("client_secret"),
         scopes=CHAT_SCOPES,
     )
 
