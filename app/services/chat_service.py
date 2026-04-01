@@ -32,7 +32,7 @@ def _build_chat_service():
         scopes=CHAT_SCOPES,
     )
 
-    if creds.expired and creds.refresh_token:
+    if creds.refresh_token and (not creds.valid or creds.expired):
         creds.refresh(Request())
 
     return build("chat", "v1", credentials=creds)
@@ -82,7 +82,6 @@ def list_messages_since(
             "parent": space_resource_name,
             "pageSize": page_size,
             "filter": filter_str,
-            "orderBy": "createTime asc",
         }
         if page_token:
             kwargs["pageToken"] = page_token
@@ -90,11 +89,11 @@ def list_messages_since(
         try:
             result = service.spaces().messages().list(**kwargs).execute()
         except HttpError as exc:
-            logger.warning(
-                "Chat API error listing messages for %s: %s",
-                space_resource_name, exc,
+            logger.error(
+                "Chat API error listing messages for %s (status %s): %s",
+                space_resource_name, exc.status_code, exc,
             )
-            break
+            raise
 
         messages.extend(result.get("messages", []))
         page_token = result.get("nextPageToken")
