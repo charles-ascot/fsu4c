@@ -1,0 +1,73 @@
+{
+  "indexes": [
+    {
+      "collectionGroup": "fsu4c-intelligence",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "received_at", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "fsu4c-intelligence",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "received_at", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "fsu4c-intelligence",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "space_id", "order": "ASCENDING" },
+        { "fieldPath": "received_at", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "fsu4c-intelligence",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "sender_email", "order": "ASCENDING" },
+        { "fieldPath": "received_at", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "fsu4c-intelligence",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "space_id", "order": "ASCENDING" },
+        { "fieldPath": "received_at", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "fsu4c-intelligence",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "sender_email", "order": "ASCENDING" },
+        { "fieldPath": "received_at", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "fsu4c-intelligence",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "space_id", "order": "ASCENDING" },
+        { "fieldPath": "sender_email", "order": "ASCENDING" },
+        { "fieldPath": "received_at", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "fsu4c-intelligence",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "space_id", "order": "ASCENDING" },
+        { "fieldPath": "sender_email", "order": "ASCENDING" },
+        { "fieldPath": "received_at", "order": "DESCENDING" }
+      ]
+    }
+  ],
+  "fieldOverrides": []
+}
