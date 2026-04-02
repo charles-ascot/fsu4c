@@ -22,6 +22,21 @@ class SpaceType(str, Enum):
     unknown = "UNKNOWN"
 
 
+class RecordType(str, Enum):
+    observation = "observation"
+    instruction = "instruction"
+
+
+class IntelligenceClassification(BaseModel):
+    record_type: RecordType = RecordType.observation
+    is_cloud_instruction: bool = False
+    instruction_text: Optional[str] = None
+    matched_categories: list[str] = Field(default_factory=list)
+    matched_keywords: dict = Field(default_factory=dict)
+    keyword_hits: int = 0
+    classified_at: Optional[datetime] = None
+
+
 class ChatAttachmentRecord(BaseModel):
     attachment_id: str
     filename: Optional[str] = None
@@ -31,6 +46,9 @@ class ChatAttachmentRecord(BaseModel):
     download_uri: Optional[str] = None
     source: Optional[str] = None   # UPLOADED_CONTENT | DRIVE_FILE | LINK
     processing_status: str = "metadata_only"
+    ocr_text: Optional[str] = None
+    ocr_confidence: Optional[float] = None
+    ocr_processed_at: Optional[datetime] = None
 
 
 class ChatRecord(BaseModel):
@@ -60,6 +78,12 @@ class ChatRecord(BaseModel):
     # GCS paths
     gcs_raw_prefix: Optional[str] = None
     gcs_processed_prefix: Optional[str] = None
+
+    # Raw payload from Chat API
+    raw_payload: Optional[dict] = None
+
+    # Intelligence classification
+    intelligence: Optional[IntelligenceClassification] = None
 
     # Processing metadata
     processing_error: Optional[str] = None

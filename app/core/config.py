@@ -60,6 +60,19 @@ class ProcessingConfig(BaseModel):
         default_factory=list,
         description="Additional domain hints passed downstream for AI processing",
     )
+    keyword_categories: dict = Field(
+        default_factory=lambda: {
+            "bet_signal": ["lay", "back", "stake", "win", "each way", "nap", "e/w"],
+            "market_observation": ["betfair", "market", "odds", "price", "sp", "bsp", "matched"],
+            "racing_terms": ["horse", "form", "going", "jockey", "trainer", "handicap", "chase", "hurdle"],
+            "trading_strategy": ["trading", "spread", "scalp", "green up", "hedge", "liability"],
+        },
+        description="Keyword categories for intelligence tagging",
+    )
+    cloud_mention_triggers: list[str] = Field(
+        default_factory=lambda: ["@cloud", "cloud,", "cloud:", "cloud -"],
+        description="Text triggers that indicate a direct instruction to the cloud account",
+    )
 
 
 CONFIG_JSON_SCHEMA = {
@@ -79,6 +92,14 @@ CONFIG_JSON_SCHEMA = {
         "max_attachment_size_mb": {"type": "integer"},
         "cloud_run_timeout_seconds": {"type": "integer"},
         "extra_domain_hints": {
+            "type": "array",
+            "items": {"type": "string"},
+        },
+        "keyword_categories": {
+            "type": "object",
+            "description": "Map of category name to list of keywords",
+        },
+        "cloud_mention_triggers": {
             "type": "array",
             "items": {"type": "string"},
         },

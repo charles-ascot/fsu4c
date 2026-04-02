@@ -4,7 +4,7 @@ import logging
 from datetime import datetime
 from typing import Optional
 
-from google.auth.transport.requests import Request
+from google.auth.transport.requests import AuthorizedSession, Request
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
@@ -19,10 +19,9 @@ CHAT_SCOPES = [
 ]
 
 
-def _build_chat_service():
-    raw_creds = get_chat_credentials()
+def _get_credentials() -> Credentials:
+    """Build and refresh OAuth credentials for the chat account."""
     raw_token = get_chat_token()
-
     creds = Credentials(
         token=raw_token.get("access_token"),
         refresh_token=raw_token.get("refresh_token"),
@@ -31,11 +30,44 @@ def _build_chat_service():
         client_secret=raw_token.get("client_secret"),
         scopes=CHAT_SCOPES,
     )
-
     if creds.refresh_token and (not creds.valid or creds.expired):
         creds.refresh(Request())
+    return creds
 
-    return build("chat", "v1", credentials=creds)
+
+def _build_chat_service():
+    return build("chat", "v1", credentials=_get_credentials())
+
+
+def download_attachment(download_uri: str, max_size_mb: int = 50) -> bytes:
+    """
+    Download an UPLOADED_CONTENT attachment using the OAuth token.
+    Raises ValueError if the content exceeds max_size_mb.
+    Raises RuntimeError for non-200 responses.
+    """
+    session = AuthorizedSession(_get_credentials())
+    response = session.get(download_uri, stream=True)
+
+    if response.status_code != 200:
+        raise RuntimeError(
+            f"Failed to download attachment (HTTP {response.status_code}): {download_uri}"
+        )
+
+    content_length = int(response.headers.get("Content-Length", 0))
+    max_bytes = max_size_mb * 1024 * 1024
+    if content_length and content_length > max_bytes:
+        raise ValueError(
+            f"Attachment size {content_length} bytes exceeds limit of {max_size_mb} MB"
+        )
+
+    data = response.content
+    if len(data) > max_bytes:
+        raise ValueError(
+            f"Attachment size {len(data)} bytes exceeds limit of {max_size_mb} MB"
+        )
+
+    logger.info("Downloaded attachment %d bytes from %s", len(data), download_uri)
+    return data
 
 
 def list_spaces() -> list[dict]:

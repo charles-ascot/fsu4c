@@ -67,6 +67,22 @@
         { "fieldPath": "sender_email", "order": "ASCENDING" },
         { "fieldPath": "received_at", "order": "DESCENDING" }
       ]
+    },
+    {
+      "collectionGroup": "fsu4c-intelligence",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "intelligence.record_type", "order": "ASCENDING" },
+        { "fieldPath": "received_at", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "fsu4c-intelligence",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "intelligence.is_cloud_instruction", "order": "ASCENDING" },
+        { "fieldPath": "received_at", "order": "DESCENDING" }
+      ]
     }
   ],
   "fieldOverrides": []

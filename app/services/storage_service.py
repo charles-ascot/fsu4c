@@ -101,6 +101,43 @@ def store_processed_record(record_id: str, record_dict: dict) -> str:
     return prefix
 
 
+def store_attachment_image(
+    raw_prefix_path: str,
+    attachment_id: str,
+    filename: str,
+    image_bytes: bytes,
+    content_type: str,
+) -> str:
+    """
+    Store an attachment image under:
+      {raw_prefix}attachments/{attachment_slug}/{filename}
+    Returns the GCS path (not including bucket name).
+    """
+    slug = attachment_id.replace("/", "_")
+    safe_filename = filename or "attachment"
+    gcs_path = f"{raw_prefix_path}attachments/{slug}/{safe_filename}"
+    upload_bytes(gcs_path, image_bytes, content_type)
+    logger.info("Attachment image stored at gs://%s/%s", GCS_BUCKET, gcs_path)
+    return gcs_path
+
+
+def store_attachment_ocr(
+    raw_prefix_path: str,
+    attachment_id: str,
+    ocr_text: str,
+) -> str:
+    """
+    Store full OCR text for an attachment under:
+      {raw_prefix}attachments/{attachment_slug}/ocr.txt
+    Returns the GCS path.
+    """
+    slug = attachment_id.replace("/", "_")
+    gcs_path = f"{raw_prefix_path}attachments/{slug}/ocr.txt"
+    upload_text(gcs_path, ocr_text)
+    logger.info("OCR text stored at gs://%s/%s", GCS_BUCKET, gcs_path)
+    return gcs_path
+
+
 def update_daily_manifest(date: datetime, record_summary: dict) -> None:
     """Append a record summary to today's daily manifest JSON."""
     path = daily_manifest_path(date)

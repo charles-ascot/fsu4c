@@ -6,17 +6,24 @@ from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
-from app.core.config import ProcessingConfig
+from app.core.config import GCS_BUCKET, ProcessingConfig
 from app.models.chat_record import (
     ChatAttachmentRecord,
     ChatRecord,
     ChimeraMeta,
     ChimeraResponse,
+    IntelligenceClassification,
     RecordStatus,
 )
 from app.routers.auth import require_api_key
 from app.routers.config import get_current_config
-from app.services import chat_service, firestore_service, storage_service
+from app.services import (
+    chat_service,
+    firestore_service,
+    intelligence_service,
+    storage_service,
+    vision_service,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -217,7 +224,7 @@ def _process_message(
 
     start = time.monotonic()
 
-    # 3. Create skeleton record
+    # 3. Create skeleton record (includes raw_payload)
     record = ChatRecord(
         message_id=message_id,
         space_id=space.space_id,
@@ -231,6 +238,7 @@ def _process_message(
         message_text=parsed.get("message_text", ""),
         received_at=parsed["received_at"],
         status=RecordStatus.processing,
+        raw_payload=parsed.get("raw"),
     )
     firestore_service.create_record(record)
 
@@ -243,18 +251,73 @@ def _process_message(
     )
     record.gcs_raw_prefix = gcs_raw_prefix
 
-    # 5. Store attachment metadata (no download in v1 — metadata only)
+    # 5. Attachments — download images, OCR, store to GCS
     for att_data in parsed.get("attachments", []):
-        record.attachments.append(
-            ChatAttachmentRecord(
-                attachment_id=att_data.get("attachment_id", ""),
-                filename=att_data.get("filename"),
-                content_type=att_data.get("content_type"),
-                download_uri=att_data.get("download_uri"),
-                source=att_data.get("source"),
-                processing_status="metadata_only",
-            )
+        att = ChatAttachmentRecord(
+            attachment_id=att_data.get("attachment_id", ""),
+            filename=att_data.get("filename"),
+            content_type=att_data.get("content_type"),
+            download_uri=att_data.get("download_uri"),
+            source=att_data.get("source"),
+            processing_status="metadata_only",
         )
+        source = att_data.get("source", "")
+        content_type = att_data.get("content_type", "") or ""
+        download_uri = att_data.get("download_uri", "")
+
+        if source == "UPLOADED_CONTENT" and content_type.startswith("image/") and download_uri:
+            try:
+                image_bytes = chat_service.download_attachment(
+                    download_uri, max_size_mb=config.max_attachment_size_mb
+                )
+                att.size_bytes = len(image_bytes)
+                gcs_path = storage_service.store_attachment_image(
+                    raw_prefix_path=gcs_raw_prefix,
+                    attachment_id=att.attachment_id,
+                    filename=att.filename or "attachment.png",
+                    image_bytes=image_bytes,
+                    content_type=content_type,
+                )
+                att.gcs_path = gcs_path
+                gcs_uri = f"gs://{GCS_BUCKET}/{gcs_path}"
+                ocr_text, ocr_confidence = vision_service.ocr_from_gcs_uri(gcs_uri)
+                att.ocr_text = ocr_text
+                att.ocr_confidence = ocr_confidence
+                att.ocr_processed_at = datetime.utcnow()
+                # Store full OCR text to GCS (may be truncated in Firestore)
+                if ocr_text:
+                    storage_service.store_attachment_ocr(
+                        raw_prefix_path=gcs_raw_prefix,
+                        attachment_id=att.attachment_id,
+                        ocr_text=ocr_text,
+                    )
+                att.processing_status = "ocr_complete"
+                logger.info(
+                    "Attachment OCR complete for message %s — %d chars extracted",
+                    message_id, len(ocr_text),
+                )
+            except Exception as exc:
+                logger.error(
+                    "Attachment processing failed for message %s: %s",
+                    message_id, exc, exc_info=True,
+                )
+                att.processing_status = "failed"
+        elif source == "DRIVE_FILE":
+            logger.warning(
+                "Skipping DRIVE_FILE attachment for message %s — Drive scope not available",
+                message_id,
+            )
+            att.processing_status = "skipped_drive_file"
+
+        record.attachments.append(att)
+
+    # 5b. Intelligence classification
+    classification = intelligence_service.classify_record(
+        text=parsed.get("message_text", ""),
+        keyword_categories=config.keyword_categories,
+        cloud_mention_triggers=config.cloud_mention_triggers,
+    )
+    record.intelligence = IntelligenceClassification(**classification)
 
     # 6. Store processed record to GCS
     gcs_processed_prefix = storage_service.store_processed_record(
@@ -278,6 +341,8 @@ def _process_message(
             "sender_name": parsed.get("sender_name", ""),
             "status": record.status.value,
             "attachment_count": len(record.attachments),
+            "record_type": classification.get("record_type", "observation"),
+            "keyword_hits": classification.get("keyword_hits", 0),
         },
     )
 
