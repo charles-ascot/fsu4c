@@ -44,7 +44,12 @@ async def pubsub_push(request: Request):
     except Exception:
         pass  # Accept any payload — we only need the trigger
 
-    config = get_current_config()
+    try:
+        config = get_current_config()
+    except Exception as exc:
+        logger.error("Failed to load config — using defaults: %s", exc, exc_info=True)
+        config = ProcessingConfig()
+
     try:
         _poll_all_spaces(config)
     except Exception as exc:
@@ -170,7 +175,6 @@ def _poll_all_spaces(
 
 def _poll_space(space, since: datetime, config: ProcessingConfig) -> int:
     """Poll a single space and process all new messages. Returns count processed."""
-    from app.models.chat_record import ChatSpace
     messages = chat_service.list_messages_since(space.space_resource_name, since=since)
     count = 0
     for msg in messages:
@@ -208,10 +212,15 @@ def _process_message(
     """
     message_id = parsed["message_id"]
 
-    # 1. Idempotency
-    if firestore_service.message_already_processed(message_id):
+    # 1. Idempotency — only skip if a completed record exists
+    existing = firestore_service.get_existing_record_status(message_id)
+    if existing == RecordStatus.complete.value:
         logger.debug("Message %s already processed — skipping", message_id)
         return False
+    if existing is not None:
+        # Stale skeleton from a previous failed attempt — remove it so we can retry
+        firestore_service.delete_record_by_message_id(message_id)
+        logger.info("Cleared stale %s record for %s — retrying", existing, message_id)
 
     # 2. Skip checks
     sender_id = parsed.get("sender_id", "")
@@ -312,18 +321,32 @@ def _process_message(
         record.attachments.append(att)
 
     # 5b. Intelligence classification
-    classification = intelligence_service.classify_record(
-        text=parsed.get("message_text", ""),
-        keyword_categories=config.keyword_categories,
-        cloud_mention_triggers=config.cloud_mention_triggers,
-    )
-    record.intelligence = IntelligenceClassification(**classification)
+    classification = {}
+    try:
+        classification = intelligence_service.classify_record(
+            text=parsed.get("message_text", ""),
+            keyword_categories=config.keyword_categories,
+            cloud_mention_triggers=config.cloud_mention_triggers,
+        )
+        record.intelligence = IntelligenceClassification(**classification)
+    except Exception as exc:
+        logger.error(
+            "Intelligence classification failed for message %s: %s",
+            message_id, exc, exc_info=True,
+        )
+        # Continue without classification — don't block the record
 
     # 6. Store processed record to GCS
-    gcs_processed_prefix = storage_service.store_processed_record(
-        record.record_id, record.model_dump(mode="json")
-    )
-    record.gcs_processed_prefix = gcs_processed_prefix
+    try:
+        gcs_processed_prefix = storage_service.store_processed_record(
+            record.record_id, record.model_dump(mode="json")
+        )
+        record.gcs_processed_prefix = gcs_processed_prefix
+    except Exception as exc:
+        logger.error(
+            "Failed to store processed record %s to GCS: %s",
+            record.record_id, exc, exc_info=True,
+        )
 
     # 7. Finalise
     record.status = RecordStatus.complete
@@ -331,20 +354,26 @@ def _process_message(
     firestore_service.update_record(record)
 
     # 8. Stats + manifest
-    firestore_service.increment_space_message_count(space.space_resource_name)
-    storage_service.update_daily_manifest(
-        parsed["received_at"],
-        {
-            "record_id": record.record_id,
-            "message_id": message_id,
-            "space_display_name": space.display_name,
-            "sender_name": parsed.get("sender_name", ""),
-            "status": record.status.value,
-            "attachment_count": len(record.attachments),
-            "record_type": classification.get("record_type", "observation"),
-            "keyword_hits": classification.get("keyword_hits", 0),
-        },
-    )
+    try:
+        firestore_service.increment_space_message_count(space.space_resource_name)
+        storage_service.update_daily_manifest(
+            parsed["received_at"],
+            {
+                "record_id": record.record_id,
+                "message_id": message_id,
+                "space_display_name": space.display_name,
+                "sender_name": parsed.get("sender_name", ""),
+                "status": record.status.value,
+                "attachment_count": len(record.attachments),
+                "record_type": classification.get("record_type", "observation"),
+                "keyword_hits": classification.get("keyword_hits", 0),
+            },
+        )
+    except Exception as exc:
+        logger.error(
+            "Failed to update stats/manifest for %s: %s",
+            message_id, exc, exc_info=True,
+        )
 
     logger.info(
         "Processed Chat message %s → record %s (%dms)",

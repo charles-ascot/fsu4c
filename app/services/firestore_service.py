@@ -46,6 +46,24 @@ def message_already_processed(message_id: str) -> bool:
     return any(True for _ in query)
 
 
+def get_existing_record_status(message_id: str) -> Optional[str]:
+    """Return the status string of an existing record, or None if not found."""
+    query = _records().where("message_id", "==", message_id).limit(1).stream()
+    for doc in query:
+        return doc.to_dict().get("status")
+    return None
+
+
+def delete_record_by_message_id(message_id: str) -> bool:
+    """Delete a record by message_id (used to clear stale skeletons for retry)."""
+    query = _records().where("message_id", "==", message_id).limit(1).stream()
+    for doc in query:
+        doc.reference.delete()
+        logger.info("Deleted stale record for message %s", message_id)
+        return True
+    return False
+
+
 def get_record_by_message_id(message_id: str) -> Optional[ChatRecord]:
     query = _records().where("message_id", "==", message_id).limit(1).stream()
     for doc in query:
