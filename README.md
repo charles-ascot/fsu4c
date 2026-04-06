@@ -110,22 +110,20 @@ This annex documents the standard procedure for connecting a new data source to 
 
 ### A.1 Overview
 
-Every FSU has exactly one data source. FSU4C's source is **Google Chat**, accessed via the Google Chat REST API v1 using OAuth 2.0 user credentials for the `chimera.data.in@gmail.com` account.
+Every FSU has exactly one data source. FSU4C's source is **Google Chat**, accessed via the Google Chat REST API v1 using OAuth 2.0 user credentials for the `cloud@ascotwm.com` account.
 
-The integration model is **polling**, not push. Cloud Scheduler fires a trigger on a regular interval; FSU4C polls all registered spaces for new messages since the last poll cursor. This approach is used because Google Chat event subscriptions (push delivery) require Google Workspace, whereas `chimera.data.in` is a personal Gmail account.
+The integration model is **polling**, not push. Cloud Scheduler fires a trigger on a regular interval; FSU4C polls all registered spaces for new messages since the last poll cursor. This approach is used because Google Chat event subscriptions (push delivery) require Google Workspace, whereas `cloud@ascotwm.com` is not a Workspace-managed account.
 
 ### A.2 Google Account Setup
 
-The account used for Chat ingestion is `chimera.data.in@gmail.com`. This is the same account used by FSU4 for Gmail ingestion.
+The account used for Chat ingestion is `cloud@ascotwm.com`. This account is added as a member to each Chat space that FSU4C monitors.
 
-**Why the same account?**
-Using a single Google account avoids OAuth cross-domain issues. The same OAuth client registered in GCP project `chimera-v4` can request both Gmail and Chat API scopes. Separate tokens are stored for each FSU:
-- FSU4: `gmail-token` secret (Gmail scopes)
+FSU4C's Chat token is stored separately from any Gmail token:
 - FSU4C: `chat-token` secret (Chat API scopes)
 
 ### A.3 OAuth Scopes Required
 
-FSU4C requires the following OAuth 2.0 scopes for the `chimera.data.in` account:
+FSU4C requires the following OAuth 2.0 scopes for the `cloud@ascotwm.com` account:
 
 ```
 https://www.googleapis.com/auth/chat.messages.readonly
@@ -156,7 +154,7 @@ These are read-only scopes. FSU4C never sends Chat messages or modifies Chat dat
    creds = flow.run_local_server(port=0)
    # Save creds.token, creds.refresh_token, etc. to Secret Manager
    ```
-   Sign in as `chimera.data.in@gmail.com` when the browser opens.
+   Sign in as `cloud@ascotwm.com` when the browser opens.
 
 4. Store the resulting token JSON in Secret Manager:
    ```
@@ -174,15 +172,15 @@ These are read-only scopes. FSU4C never sends Chat messages or modifies Chat dat
 
 Google Chat spaces are not automatically monitored. Each space must be explicitly registered with FSU4C before it will be polled.
 
-**Step 1 — Add `chimera.data.in` to the Chat space**
-The `chimera.data.in` Google account must be a member of any space you want to monitor. A human administrator must add it manually via Google Chat.
+**Step 1 — Add `cloud@ascotwm.com` to the Chat space**
+The `cloud@ascotwm.com` Google account must be a member of any space you want to monitor. A human administrator must add it manually via Google Chat.
 
 **Step 2 — Discover available spaces**
 ```
 POST /v1/spaces/discover
 X-Chimera-API-Key: <master-key>
 ```
-Returns all Chat spaces that `chimera.data.in` is a member of, with a flag indicating whether each is already registered.
+Returns all Chat spaces that `cloud@ascotwm.com` is a member of, with a flag indicating whether each is already registered.
 
 **Step 3 — Register the space**
 ```
@@ -321,11 +319,51 @@ When adding any new FSU to the Chimera platform, follow this checklist:
 - [ ] Document source integration in this FSU's README Annex A
 
 
+## Post-Deploy Operations
+
+### Backfill missed messages after a fresh deployment
+
+After deploying to a new environment (or after a polling gap), run a manual backfill to ingest any messages that were missed. Set `since_iso` to the earliest date you want to catch up from:
+
+```bash
+curl -X POST https://fsu4c-950990732577.europe-west2.run.app/v1/ingest/manual \
+  -H "X-Chimera-API-Key: <your-api-key>" \
+  -H "Content-Type: application/json" \
+  -d '{"since_iso": "2026-04-01T00:00:00"}'
+```
+
+To target a specific space only:
+
+```bash
+curl -X POST https://fsu4c-950990732577.europe-west2.run.app/v1/ingest/manual \
+  -H "X-Chimera-API-Key: <your-api-key>" \
+  -H "Content-Type: application/json" \
+  -d '{"space_resource_name": "spaces/AAAA1234", "since_iso": "2026-04-01T00:00:00"}'
+```
+
+The response includes `messages_processed` — rerun with an earlier `since_iso` if you need to go back further.
+
+---
+
 ## Changelog
 
+### 2026-04-06 — Resilient pipeline + attachment intelligence
+
+- **Resilient retry:** idempotency check now only skips `complete` records; stale `processing` skeletons from failed runs are auto-deleted and retried cleanly
+- **Error isolation:** classification, GCS store, and stats/manifest steps are individually wrapped — a failure in one step no longer orphans the whole record
+- **Attachment capture:** uploaded images are downloaded via OAuth, stored to GCS, and OCR'd with Cloud Vision API (`document_text_detection`)
+- **Intelligence classification:** every message is classified on ingest — `@cloud` mention detection (instruction vs observation) and keyword category matching
+- **Firestore schema:** `ChatRecord` gains `raw_payload` and `intelligence` fields; `ChatAttachmentRecord` gains `ocr_text`, `ocr_confidence`, `ocr_processed_at`
+- **New Firestore indexes:** composite indexes on `intelligence.record_type` and `intelligence.is_cloud_instruction` for efficient filtering
+
+### 2026-04-05 — orderBy bug fix
+
+- Removed invalid `orderBy` parameter from `chat_service.list_messages_since` — the Chat API `messages.list` call was returning HTTP 400 on every poll, silently swallowed, causing zero messages to be ingested
+
 ### 2026-03-30 — Domain migration prep
+
 - Replaced hardcoded `thync.online` domain references with environment variables
 - `ALLOWED_ORIGINS` env var (Cloud Run) now controls CORS allowed origins — set as comma-separated list, e.g. `https://service.newdomain.com,https://service.newdomain.com`
 - Default falls back to `http://localhost:5173` for local development
-- `CHAT_INGEST_ACCOUNT` env var added — set to `cloud@ascotwm.com` for testing (defaults to `chimera.data.in@gmail.com`)
+- `CHAT_INGEST_ACCOUNT` env var added — currently set to `cloud@ascotwm.com` on Cloud Run
 - See `domain-migration-register.md` at the root of /Users/charles/Projects for the complete list of Cloud Run env vars to set per service
